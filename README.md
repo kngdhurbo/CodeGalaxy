@@ -18,7 +18,27 @@ CodeGalaxy is an interactive 3D WebGL data visualization tool that renders GitHu
 - **Backend:** Python, FastAPI, SQLAlchemy, Tree-sitter, UMAP-learn, Sentence-Transformers, httpx.
 - **Database:** SQLite (local dev), async operations.
 
-## Setup
+## Deploying to Railway
+
+CodeGalaxy is fully configured to be deployed as a single Monorepo project on [Railway](https://railway.app/).
+
+1. Connect your GitHub repository to a new Railway Project.
+2. Railway will ask you what you want to deploy. Select your repository.
+3. We need to deploy this repository **twice** (once for the frontend, once for the backend).
+4. **Setup the Backend Service:**
+   - Go to the new service settings in Railway.
+   - Go to **Settings > Build > Root Directory** and enter `/backend`.
+   - Go to **Variables** and add your `GITHUB_TOKEN`, `OPENROUTER_API_KEY`, etc.
+   - Railway will automatically detect the `/backend/Dockerfile` and deploy the FastAPI ML application.
+   - Generate a Domain for this backend service.
+5. **Setup the Frontend Service:**
+   - Click **+ New** inside your Railway project and select the exact same GitHub repository.
+   - Go to **Settings > Build > Root Directory** and enter `/frontend`.
+   - Go to **Settings > Variables** and add `VITE_API_URL` pointing to the public domain you generated for your backend service (e.g. `https://my-backend-url.up.railway.app/api`).
+   - Railway will automatically detect Vite and deploy your 3D frontend.
+   - Generate a Domain for the frontend service to access the live app!
+
+## Local Setup
 
 ### 1. Backend
 ```bash
