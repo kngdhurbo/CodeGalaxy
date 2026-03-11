@@ -19,8 +19,8 @@ RUN touch codegalaxy.db
 # Copy project code
 COPY . .
 
-# Expose the Railway expected port
+# Expose the default port (can be overridden by Railway)
 EXPOSE 8000
 
-# Start FastAPI server on generic host 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Start FastAPI server binding to 0.0.0.0 and the dynamic Railway $PORT
+CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}
