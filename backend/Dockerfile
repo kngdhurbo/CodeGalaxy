@@ -14,14 +14,15 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Create an empty sqlite db for the build process (it will be persisted via volumes later if needed)
-RUN touch codegalaxy.db
-
 # Copy project code
 COPY . .
 
-# Expose the default port (can be overridden by Railway)
-EXPOSE 8000
+# Create data directory and ensure proper ownership for HFS user (UID 1000)
+RUN mkdir -p /app/data && chown -R 1000:1000 /app
+USER 1000
 
-# Start FastAPI server binding to 0.0.0.0 and the dynamic HFS/Railway $PORT
+# Expose the default port
+EXPOSE 7860
+
+# Start FastAPI server binding to 0.0.0.0 and the dynamic HFS $PORT
 CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-7860}

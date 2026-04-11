@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     openai_api_key: Optional[str] = None
 
     # Database
-    database_url: str = "sqlite+aiosqlite:///./codegalaxy.db"
+    database_url: str = "sqlite+aiosqlite:///./data/codegalaxy.db"
 
     # UMAP parameters
     umap_n_neighbors: int = 15
