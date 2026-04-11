@@ -62,7 +62,7 @@ async def fetch_repo_tree(owner: str, repo: str, branch: str = "main") -> list[d
         return files
 
 
-async def fetch_file_content_batch(owner: str, repo: str, paths: list[str], branch: str = "main", max_concurrent: int = 50) -> dict[str, str]:
+async def fetch_file_content_batch(owner: str, repo: str, paths: list[str], branch: str = "main", max_concurrent: int = 100) -> dict[str, str]:
     """
     Fetch multiple files concurrently using a semaphore.
     Returns { path: content }.

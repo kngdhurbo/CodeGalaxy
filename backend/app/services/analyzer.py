@@ -84,3 +84,26 @@ def compute_risk_score(
     )
 
     return round(min(max(score, 0.0), 1.0), 3)
+
+
+async def analyze_file_async(content: str, language: str, loc: int, function_count: int, import_count: int) -> dict:
+    """Async wrapper for running full analysis suite on a file."""
+    import asyncio
+    
+    def _run():
+        todo_count = count_markers(content)
+        complexity = compute_cyclomatic_complexity(content, language)
+        risk_score = compute_risk_score(
+            complexity=complexity,
+            loc=loc,
+            todo_count=todo_count,
+            function_count=function_count,
+            import_count=import_count
+        )
+        return {
+            "todo_count": todo_count,
+            "complexity": complexity,
+            "risk_score": risk_score
+        }
+
+    return await asyncio.to_thread(_run)

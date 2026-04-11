@@ -1,0 +1,20 @@
+# CodeGalaxy Command Sequence
+
+To launch the full CodeGalaxy architectural intelligence suite, execute the following commands in separate terminals:
+
+## 1. Backend Station (Python/Uvicorn)
+Navigate to the backend directory and launch the API bridge:
+`cd backend`
+`uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload`
+
+## 2. Frontend Orbital (React/Vite)
+Navigate to the frontend directory and ignite the HUD interface:
+`cd frontend`
+`npm run dev`
+
+---
+### Technical Notes & Environment
+- **API Environment**: Groq Llama-3.1-8b-instant is active for architectural summaries.
+- **Port Mapping**: Backend [8000] | Frontend [5173]
+- **Storage**: `codegalaxy.db` handles local persistence for mapped universes.
+- **Cleanup**: Workspace sanitized on 2026-04-11.

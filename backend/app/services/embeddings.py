@@ -3,6 +3,7 @@ CodeGalaxy Backend - Embedding Service
 Generates vector embeddings for code files using local or OpenAI models.
 """
 import numpy as np
+import httpx
 from typing import Optional
 from app.config import settings
 
@@ -49,30 +50,43 @@ def _get_local_model():
 async def embed_local(texts: list[str]) -> np.ndarray:
     """Embed using local sentence-transformers model."""
     model = _get_local_model()
-    embeddings = model.encode(texts, show_progress_bar=False)
+    # model.encode is a blocking call, run in thread
+    import asyncio
+    embeddings = await asyncio.to_thread(model.encode, texts, show_progress_bar=False)
     return np.array(embeddings)
 
 
 async def embed_openrouter(texts: list[str]) -> np.ndarray:
     """Embed using OpenRouter API (OpenAI-compatible endpoint)."""
-    import httpx
-
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        resp = await client.post(
-            "https://openrouter.ai/api/v1/embeddings",
-            headers={
-                "Authorization": f"Bearer {settings.openrouter_api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "input": texts,
-                "model": "openai/text-embedding-3-small",
-            },
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        embeddings = [item["embedding"] for item in data["data"]]
-        return np.array(embeddings)
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            # Note: Many OpenRouter models don't support /embeddings. 
+            # We use OpenAI directly if possible, or fallback.
+            resp = await client.post(
+                "https://api.openai.com/v1/embeddings", 
+                headers={
+                    "Authorization": f"Bearer {settings.openrouter_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "input": texts,
+                    "model": "text-embedding-3-small",
+                },
+            )
+            if resp.status_code != 200:
+                print(f"Embedding API failed ({resp.status_code}): {resp.text}. Falling back to local.")
+                return await embed_local(texts)
+                
+            data = resp.json()
+            if "data" not in data:
+                print(f"Unexpected response format: {data}. Falling back to local.")
+                return await embed_local(texts)
+                
+            embeddings = [item["embedding"] for item in data["data"]]
+            return np.array(embeddings)
+    except Exception as e:
+        print(f"Embedding error: {e}. Falling back to local.")
+        return await embed_local(texts)
 
 
 # ─── Main entry point ─────────────────────────────────────
@@ -90,6 +104,8 @@ async def embed_file(content: str) -> list[float]:
         embeddings = await embed_local(chunks)
 
     # Average all chunk embeddings into a single file vector
+    if embeddings.size == 0:
+        return []
     file_embedding = np.mean(embeddings, axis=0)
     return file_embedding.tolist()
 
@@ -112,14 +128,14 @@ async def embed_batch(contents: list[str]) -> list[list[float]]:
 
     # Embed all chunks in one batch
     if settings.embedding_model == "openrouter" and settings.openrouter_api_key:
-        # OpenRouter has batch limits, chunk the request
+        # Batch requests
         batch_size = 100
-        all_embeddings = []
+        all_embeddings_list = []
         for j in range(0, len(all_chunks), batch_size):
             batch = all_chunks[j:j + batch_size]
             emb = await embed_openrouter(batch)
-            all_embeddings.append(emb)
-        all_embeddings = np.vstack(all_embeddings)
+            all_embeddings_list.append(emb)
+        all_embeddings = np.vstack(all_embeddings_list)
     else:
         all_embeddings = await embed_local(all_chunks)
 

@@ -121,6 +121,12 @@ def parse_file(path: str, content: str) -> dict:
     }
 
 
+async def parse_file_async(path: str, content: str) -> dict:
+    """Async wrapper for parsing."""
+    import asyncio
+    return await asyncio.to_thread(parse_file, path, content)
+
+
 def resolve_import_to_path(imp: str, all_paths: list[str], source_dir: str) -> Optional[str]:
     """
     Try to resolve an import string to an actual file path in the repo.

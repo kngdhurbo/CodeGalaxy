@@ -51,6 +51,8 @@ async def get_graph(repo_id: int, db: AsyncSession = Depends(get_db)):
             risk_score=n.risk_score,
             todo_count=n.todo_count,
             function_count=n.function_count,
+            summary=n.summary,
+            importance_score=n.importance_score or 1.0,
         )
         for n in file_nodes
     ]
@@ -70,3 +72,25 @@ async def get_graph(repo_id: int, db: AsyncSession = Depends(get_db)):
         nodes=nodes,
         edges=edges,
     )
+from app.services import summarizer
+
+@router.post("/files/{node_id}/summary")
+async def get_node_summary(node_id: int, db: AsyncSession = Depends(get_db)):
+    """Generate or retrieve AI summary for a specific file node."""
+    node = await db.get(FileNode, node_id)
+    if not node:
+        raise HTTPException(status_code=404, detail="Node not found")
+    
+    if node.summary:
+        return {"summary": node.summary}
+    
+    if not node.content:
+        raise HTTPException(status_code=400, detail="Node has no content to summarize")
+    
+    try:
+        summary = await summarizer.summarize_file(node.path, node.content)
+        node.summary = summary
+        await db.commit()
+        return {"summary": summary}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Summarization failed: {str(e)}")

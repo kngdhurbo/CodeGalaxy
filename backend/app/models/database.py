@@ -40,7 +40,8 @@ class FileNode(Base):
 
     # Content
     content = Column(Text, nullable=True)
-    loc = Column(Integer, default=0)  # Lines of code
+    summary = Column(Text, nullable=True)  # Pre-generated AI summary
+    loc = Column(Integer, default=0)       # Lines of code
 
     # 3D coordinates (from UMAP)
     x = Column(Float, default=0.0)
@@ -50,6 +51,7 @@ class FileNode(Base):
     # Metrics
     complexity = Column(Float, default=0.0)
     risk_score = Column(Float, default=0.0)
+    importance_score = Column(Float, default=1.0) # Influence planet size
     todo_count = Column(Integer, default=0)
     function_count = Column(Integer, default=0)
 
@@ -79,6 +81,15 @@ class Edge(Base):
 # ─── Database Engine ───────────────────────────────────────
 
 engine = create_async_engine(settings.database_url, echo=False)
+
+from sqlalchemy import event
+@event.listens_for(engine.sync_engine, "connect")
+def set_sqlite_pragma(dbapi_connection, connection_record):
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.close()
+
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 

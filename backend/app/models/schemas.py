@@ -28,6 +28,8 @@ class NodeResponse(BaseModel):
     risk_score: float
     todo_count: int
     function_count: int
+    summary: Optional[str] = None
+    importance_score: float = 1.0
 
     model_config = {"from_attributes": True}
 
@@ -70,6 +72,8 @@ class FileDetailResponse(BaseModel):
     risk_score: float
     todo_count: int
     function_count: int
+    summary: Optional[str] = None
+    importance_score: float = 1.0
     imports: list
     functions: list
     classes: list

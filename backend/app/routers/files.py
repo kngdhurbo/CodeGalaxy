@@ -63,17 +63,22 @@ async def generate_file_summary(file_id: int, db: AsyncSession = Depends(get_db)
     if not file_node.content:
         return {"summary": "No raw code available for this file."}
 
-    # If OpenRouter key is set, use it; otherwise fallback to OpenAI key, or default demo
-    api_key = settings.openrouter_api_key
-    base_url = "https://openrouter.ai/api/v1/chat/completions"
-    model = "google/gemini-2.5-flash"
+    # Prioritize Groq, then OpenRouter, then OpenAI
+    api_key = settings.groq_api_key
+    base_url = "https://api.groq.com/openai/v1/chat/completions"
+    model = "llama-3.1-8b-instant"
     
     if not api_key:
-         api_key = settings.openai_api_key
-         base_url = "https://api.openai.com/v1/chat/completions"
-         model = "gpt-4o-mini"
-         if not api_key:
-             return {"summary": "Please set OPENROUTER_API_KEY or OPENAI_API_KEY in the backend .env file to enable AI summaries."}
+        api_key = settings.openrouter_api_key
+        base_url = "https://openrouter.ai/api/v1/chat/completions"
+        model = "google/gemini-2.5-flash"
+        
+        if not api_key:
+             api_key = settings.openai_api_key
+             base_url = "https://api.openai.com/v1/chat/completions"
+             model = "gpt-4o-mini"
+             if not api_key:
+                 return {"summary": "Please set GROQ_API_KEY, OPENROUTER_API_KEY, or OPENAI_API_KEY to enable AI summaries."}
 
     prompt = f"""You are a senior software architect. Provide a concise, 2-3 sentence plain-English summary explaining the primary purpose of this file within the repository.
 Analyze its imports and exports to understand its role. Do NOT list the functions. Explain *why* it exists.
@@ -113,3 +118,63 @@ Code:
     except Exception as e:
         print(f"Error generating summary: {e}")
         return {"summary": f"Failed to generate AI summary. Status: {getattr(e, 'response', 'Network Error')}."}
+@router.post("/ai/summarize-code")
+async def summarize_raw_code(data: dict = Body(...), db: AsyncSession = Depends(get_db)):
+    """Proxy endpoint to generate summary for raw code without a DB file ID."""
+    code = data.get("code", "")
+    path = data.get("path", "unknown")
+    if not code:
+        return {"summary": "No code provided for analysis."}
+
+    # Reuse the same logic as above
+    api_key = settings.groq_api_key
+    base_url = "https://api.groq.com/openai/v1/chat/completions"
+    model = "llama-3.1-8b-instant"
+    
+    if not api_key:
+        api_key = settings.openrouter_api_key
+        base_url = "https://openrouter.ai/api/v1/chat/completions"
+        model = "google/gemini-2.0-flash" # Updated model
+        
+        if not api_key:
+             api_key = settings.openai_api_key
+             base_url = "https://api.openai.com/v1/chat/completions"
+             model = "gpt-4o-mini"
+             if not api_key:
+                 return {"summary": "Please set GROQ_API_KEY, OPENROUTER_API_KEY, or OPENAI_API_KEY to enable AI summaries."}
+
+    prompt = f"""You are a senior software architect. Provide a concise, 2-3 sentence plain-English summary explaining the primary purpose of this file.
+Analyze its logic to understand its role. Do NOT list the functions. Explain *why* it exists.
+
+File path: {path}
+Code:
+```
+{code[:8000]} 
+```
+"""
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "You provide extremely clear, concise architectural intuition about code files."},
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.3,
+        "max_tokens": 150
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(base_url, headers=headers, json=payload)
+            response.raise_for_status()
+            ai_data = response.json()
+            summary = ai_data["choices"][0]["message"]["content"].strip()
+            return {"summary": summary}
+    except Exception as e:
+        print(f"Proxy error: {e}")
+        return {"summary": "STATION_UPLINK_FAILURE: AI analysis unavailable."}

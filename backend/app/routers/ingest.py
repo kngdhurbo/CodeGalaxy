@@ -9,81 +9,97 @@ from sqlalchemy import select
 
 from app.models.database import get_db, Repository, FileNode, Edge
 from app.models.schemas import IngestRequest, IngestStatusResponse
-from app.services import github, parser, embeddings, analyzer, reducer
+from app.services import github, parser, embeddings, analyzer, reducer, ingestor, summarizer
 
 router = APIRouter(prefix="/api", tags=["ingest"])
 
 
 async def _run_pipeline(repo_id: int, owner: str, repo: str, branch: str):
     """
-    Background task that runs the full ingestion pipeline:
-    1. Fetch repo tree from GitHub
-    2. Download file contents
-    3. Parse AST (imports, functions, classes)
-    4. Generate embeddings
-    5. Reduce to 3D coordinates
-    6. Compute risk scores
+    Parallelized background task for high-speed repository ingestion using local cloning.
+    Uses multiple sessions to prevent long-held SQLite locks.
     """
     from app.models.database import async_session
 
-    async with async_session() as db:
-        try:
-            # Update status
+    repo_path = None
+    all_paths = []
+    files_data = []
+
+    try:
+        # 1. Initial Setup & Clone
+        async with async_session() as db:
             repo_obj = await db.get(Repository, repo_id)
-            repo_obj.status = "processing"
+            repo_obj.status = "cloning"
+            await db.commit()
+            github_url = f"https://github.com/{owner}/{repo}.git"
+            
+        repo_path = await asyncio.to_thread(ingestor.clone_repo, github_url)
+        
+        # 2. Traversal
+        async with async_session() as db:
+            repo_obj = await db.get(Repository, repo_id)
+            repo_obj.status = "reading files"
+            await db.commit()
+        
+        files_data = await ingestor.get_source_files(repo_path)
+        all_paths = [f["path"] for f in files_data]
+        
+        async with async_session() as db:
+            repo_obj = await db.get(Repository, repo_id)
+            repo_obj.total_files = len(files_data)
+            repo_obj.status = "parsing code"
             await db.commit()
 
-            # 1. Fetch file tree
-            tree = await github.fetch_repo_tree(owner, repo, branch)
-            repo_obj.total_files = len(tree)
-            await db.commit()
-
-            if not tree:
+        if not files_data:
+            async with async_session() as db:
+                repo_obj = await db.get(Repository, repo_id)
                 repo_obj.status = "error"
                 await db.commit()
-                return
+            return
 
-            # 2. Download content & parse concurrently
-            file_nodes = []
-            all_paths = [f["path"] for f in tree]
-
-            # Fetch all file contents using batch concurrent downloader
-            contents_dict = await github.fetch_file_content_batch(owner, repo, all_paths, branch)
-
-            for i, file_info in enumerate(tree):
-                path = file_info["path"]
-                content = contents_dict.get(path)
-                if not content:
-                    continue
-
-                parsed = parser.parse_file(path, content)
-
+        # 3. Parallel Parse
+        parse_tasks = [
+            parser.parse_file_async(f["path"], f["content"]) 
+            for f in files_data
+        ]
+        parsed_results = await asyncio.gather(*parse_tasks)
+        
+        # 4. Save Nodes
+        async with async_session() as db:
+            repo_obj = await db.get(Repository, repo_id)
+            for i, (f, parsed) in enumerate(zip(files_data, parsed_results)):
                 node = FileNode(
                     repo_id=repo_id,
-                    path=path,
-                    filename=path.split("/")[-1],
+                    path=f["path"],
+                    filename=f["path"].split("/")[-1],
                     language=parsed["language"],
-                    sha=file_info["sha"],
-                    content=content,
+                    sha=f["sha"],
+                    content=f["content"],
                     loc=parsed["loc"],
                     imports=parsed["imports"],
                     functions=parsed["functions"],
                     classes=parsed["classes"],
                     function_count=len(parsed["functions"]),
                 )
-                file_nodes.append(node)
                 db.add(node)
-
                 repo_obj.processed_files = i + 1
-                if (i + 1) % 50 == 0:
+                if (i + 1) % 500 == 0:
                     await db.commit()
-
+                    # Re-get repo_obj after commit because session might expire it
+                    repo_obj = await db.get(Repository, repo_id)
             await db.commit()
 
-            # 3. Resolve dependency edges
+        # 5. Resolve Imports
+        async with async_session() as db:
+            repo_obj = await db.get(Repository, repo_id)
             repo_obj.status = "resolving imports"
             await db.commit()
-            for node in file_nodes:
+            
+            # Fetch nodes to resolve
+            result = await db.execute(select(FileNode).where(FileNode.repo_id == repo_id))
+            nodes = result.scalars().all()
+            
+            for node in nodes:
                 source_dir = "/".join(node.path.split("/")[:-1])
                 for imp in (node.imports or []):
                     target_path = parser.resolve_import_to_path(imp, all_paths, source_dir)
@@ -97,58 +113,79 @@ async def _run_pipeline(repo_id: int, owner: str, repo: str, branch: str):
                         db.add(edge)
             await db.commit()
 
-            # 4. Generate embeddings
+        # 6. Embeddings Phase
+        async with async_session() as db:
+            repo_obj = await db.get(Repository, repo_id)
             repo_obj.status = "embedding vectors"
             await db.commit()
-            contents = [n.content for n in file_nodes if n.content]
-            if contents:
+            
+            result = await db.execute(select(FileNode).where(FileNode.repo_id == repo_id).where(FileNode.content != None))
+            valid_nodes = result.scalars().all()
+            
+            if valid_nodes:
+                contents = [n.content for n in valid_nodes]
                 emb_vectors = await embeddings.embed_batch(contents)
-                for node, emb in zip(file_nodes, emb_vectors):
+                for node, emb in zip(valid_nodes, emb_vectors):
                     node.embedding = emb
-
                 await db.commit()
 
-                # 5. Reduce to 3D
+                # 7. Reducer Phase
+                repo_obj = await db.get(Repository, repo_id)
                 repo_obj.status = "computing 3D space"
                 await db.commit()
-                valid_embeddings = [n.embedding for n in file_nodes if n.embedding]
+                
+                valid_embeddings = [n.embedding for n in valid_nodes if n.embedding]
                 if valid_embeddings:
                     coords = reducer.reduce_to_3d(valid_embeddings)
-                    idx = 0
-                    for node in file_nodes:
-                        if node.embedding:
-                            node.x = coords[idx]["x"]
-                            node.y = coords[idx]["y"]
-                            node.z = coords[idx]["z"]
-                            idx += 1
+                    # Use index map to apply coords
+                    nodes_with_emb = [n for n in valid_nodes if n.embedding]
+                    for i, node in enumerate(nodes_with_emb):
+                        node.x = coords[i]["x"]
+                        node.y = coords[i]["y"]
+                        node.z = coords[i]["z"]
+                    await db.commit()
 
-            # 6. Compute risk scores
+        # 8. Analysis Phase
+        async with async_session() as db:
+            repo_obj = await db.get(Repository, repo_id)
             repo_obj.status = "analyzing code health"
             await db.commit()
-            for node in file_nodes:
-                node.todo_count = analyzer.count_markers(node.content or "")
-                node.complexity = analyzer.compute_cyclomatic_complexity(
-                    node.content or "", node.language
+            
+            result = await db.execute(select(FileNode).where(FileNode.repo_id == repo_id))
+            nodes = result.scalars().all()
+            
+            analysis_tasks = [
+                analyzer.analyze_file_async(
+                    node.content, node.language, node.loc, 
+                    node.function_count, len(node.imports or [])
                 )
-                node.risk_score = analyzer.compute_risk_score(
-                    complexity=node.complexity,
-                    loc=node.loc,
-                    todo_count=node.todo_count,
-                    function_count=node.function_count,
-                    import_count=len(node.imports or []),
-                )
+                for node in nodes
+            ]
+            analysis_results = await asyncio.gather(*analysis_tasks)
+            
+            for node, res in zip(nodes, analysis_results):
+                node.todo_count = res["todo_count"]
+                node.complexity = res["complexity"]
+                node.risk_score = res["risk_score"]
+                # Calculate initial importance score
+                node.importance_score = await summarizer.get_importance_score(node.filename, node.content, node.loc)
+
+            await db.commit()
 
             repo_obj.status = "done"
             await db.commit()
 
-        except Exception as e:
+    except Exception as e:
+        print(f"Pipeline error for {owner}/{repo}: {e}")
+        async with async_session() as db:
             repo_obj = await db.get(Repository, repo_id)
             if repo_obj:
                 repo_obj.status = "error"
                 await db.commit()
-            print(f"Pipeline error: {e}")
-            raise
-
+        raise
+    finally:
+        if repo_path:
+            ingestor.cleanup_repo(repo_path)
 
 @router.post("/ingest")
 async def ingest_repo(

@@ -48,5 +48,6 @@ async def root():
 
 
 @app.get("/health")
+@app.get("/ping")
 async def health():
-    return {"status": "ok"}
+    return {"status": "Stellar engine active"}
