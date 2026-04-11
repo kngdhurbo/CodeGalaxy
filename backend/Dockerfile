@@ -5,6 +5,7 @@ WORKDIR /app
 
 # Install build dependencies for C-extensions (tree-sitter, etc.)
 RUN apt-get update && apt-get install -y \
+    git \
     build-essential \
     curl \
     && rm -rf /var/lib/apt/lists/*
